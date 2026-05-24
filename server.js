@@ -18,35 +18,52 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 /**
- * Efficiently adds a WAV header to a PCM buffer.
- * Pre-allocates a single buffer of total size to avoid multiple allocations and copies.
+ * Zero-copy WAV header generation.
+ * Generates a 54-byte WAV header (multiple of 3) to allow direct Base64 concatenation.
+ * This avoids decoding the PCM data and re-encoding the entire WAV file.
  */
-function addWavHeader(pcmBuffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
-  const subChunk2Size = pcmBuffer.length;
-  const chunkSize = 36 + subChunk2Size;
+function getWavHeaderBase64(pcmLength, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
+  const subChunk2Size = pcmLength;
+  const chunkSize = 46 + subChunk2Size; // 54 (total header) - 8
   const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
   const blockAlign = (numChannels * bitsPerSample) / 8;
 
-  const totalBuffer = Buffer.allocUnsafe(44 + subChunk2Size);
+  // 54 bytes is a multiple of 3, which means its Base64 representation
+  // doesn't have padding and doesn't affect the Base64 encoding of the following data.
+  const headerBuffer = Buffer.allocUnsafe(54);
 
-  totalBuffer.write("RIFF", 0);
-  totalBuffer.writeUInt32LE(chunkSize, 4);
-  totalBuffer.write("WAVE", 8);
-  totalBuffer.write("fmt ", 12);
-  totalBuffer.writeUInt32LE(16, 16);
-  totalBuffer.writeUInt16LE(1, 20);
-  totalBuffer.writeUInt16LE(numChannels, 22);
-  totalBuffer.writeUInt32LE(sampleRate, 24);
-  totalBuffer.writeUInt32LE(byteRate, 28);
-  totalBuffer.writeUInt16LE(blockAlign, 32);
-  totalBuffer.writeUInt16LE(bitsPerSample, 34);
-  totalBuffer.write("data", 36);
-  totalBuffer.writeUInt32LE(subChunk2Size, 40);
+  headerBuffer.write("RIFF", 0);
+  headerBuffer.writeUInt32LE(chunkSize, 4);
+  headerBuffer.write("WAVE", 8);
 
-  // Copy PCM data into the same buffer
-  pcmBuffer.copy(totalBuffer, 44);
+  // JUNK chunk to pad the header to 54 bytes
+  headerBuffer.write("JUNK", 12);
+  headerBuffer.writeUInt32LE(2, 16);
+  headerBuffer.writeUInt16LE(0, 20); // 2 bytes of junk
 
-  return totalBuffer;
+  headerBuffer.write("fmt ", 22);
+  headerBuffer.writeUInt32LE(16, 26);
+  headerBuffer.writeUInt16LE(1, 30);
+  headerBuffer.writeUInt16LE(numChannels, 32);
+  headerBuffer.writeUInt32LE(sampleRate, 34);
+  headerBuffer.writeUInt32LE(byteRate, 38);
+  headerBuffer.writeUInt16LE(blockAlign, 42);
+  headerBuffer.writeUInt16LE(bitsPerSample, 44);
+  headerBuffer.write("data", 46);
+  headerBuffer.writeUInt32LE(subChunk2Size, 50);
+
+  return headerBuffer.toString('base64');
+}
+
+/**
+ * Helper to calculate the byte length of a base64 string without fully decoding it.
+ */
+function getBase64ByteLength(base64Str) {
+  const len = base64Str.length;
+  let padding = 0;
+  if (base64Str[len - 1] === '=') padding++;
+  if (base64Str[len - 2] === '=') padding++;
+  return (len / 4) * 3 - padding;
 }
 
 // Pre-defined maps and regex for performance
@@ -225,20 +242,18 @@ app.post('/api/generate-audio', async (req, res) => {
     const candidate = data.candidates?.[0];
     const part = candidate?.content?.parts?.[0];
 
-    if (!part || !part.inlineData || !part.inlineData.data) {
+    const base64Pcm = part?.inlineData?.data;
+    if (!base64Pcm) {
       console.error("Gemini API response does not contain audio:", data);
       return res.status(500).json({ error: "Gemini API response did not contain audio data" });
     }
 
-    // Decode base64 PCM data
-    const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
+    // Optimization: Zero-copy WAV creation.
+    // We avoid decoding/re-encoding the large PCM payload by concatenating a pre-computed Base64 header.
+    const pcmLength = getBase64ByteLength(base64Pcm);
+    const headerBase64 = getWavHeaderBase64(pcmLength, 24000, 1, 16);
     
-    // Add WAV header (Gemini TTS returns 24kHz 16-bit Mono PCM)
-    const wavBuffer = addWavHeader(pcmBuffer, 24000, 1, 16);
-    
-    // Encode back to Base64 WAV
-    const base64Wav = wavBuffer.toString('base64');
-    const audioUrl = `data:audio/wav;base64,${base64Wav}`;
+    const audioUrl = `data:audio/wav;base64,${headerBase64}${base64Pcm}`;
 
     // Store in cache before sending response
     if (audioCache.size >= MAX_CACHE_SIZE) {
