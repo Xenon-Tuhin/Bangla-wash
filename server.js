@@ -163,7 +163,7 @@ app.post('/api/generate-audio', async (req, res) => {
   console.log(finalPrompt);
   console.log("--------------------------------------------");
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent`;
 
   // Build the multi-speaker payload
   const payload = {
@@ -207,7 +207,8 @@ app.post('/api/generate-audio', async (req, res) => {
     const apiResponse = await fetch(url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
       },
       body: JSON.stringify(payload)
     });
@@ -216,9 +217,10 @@ app.post('/api/generate-audio', async (req, res) => {
 
     if (!apiResponse.ok) {
       console.error("Gemini API Error Response:", data);
+      // Don't leak full API error details to client for security
       return res.status(apiResponse.status).json({ 
         error: "Gemini API error", 
-        details: data.error?.message || JSON.stringify(data) 
+        details: data.error?.message ? "API responded with an error" : "Unexpected error format"
       });
     }
 
@@ -252,7 +254,8 @@ app.post('/api/generate-audio', async (req, res) => {
 
   } catch (error) {
     console.error("Error in generate-audio:", error);
-    res.status(500).json({ error: "Internal server error", details: error.message });
+    // Don't leak stack traces or internal error messages to client
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
