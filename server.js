@@ -132,6 +132,15 @@ app.post('/api/generate-audio', async (req, res) => {
     return res.status(400).json({ error: "Script text is required" });
   }
 
+  // Security: Input length limits to prevent resource exhaustion or abuse
+  if (scriptText.length > 5000) {
+    return res.status(400).json({ error: "Script text is too long (max 5000 characters)" });
+  }
+
+  if (directorNotes && directorNotes.length > 500) {
+    return res.status(400).json({ error: "Director notes are too long (max 500 characters)" });
+  }
+
   // Generate a unique cache key based on the request payload
   const cacheKey = crypto.createHash('md5')
     .update(JSON.stringify({ scriptText, directorNotes, xenonVoice, silicaVoice }))
@@ -163,7 +172,8 @@ app.post('/api/generate-audio', async (req, res) => {
   console.log(finalPrompt);
   console.log("--------------------------------------------");
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
+  // Security: Pass API key via header instead of query parameter to prevent leakage in logs/proxies
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent`;
 
   // Build the multi-speaker payload
   const payload = {
@@ -207,7 +217,8 @@ app.post('/api/generate-audio', async (req, res) => {
     const apiResponse = await fetch(url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
       },
       body: JSON.stringify(payload)
     });
@@ -215,10 +226,10 @@ app.post('/api/generate-audio', async (req, res) => {
     const data = await apiResponse.json();
 
     if (!apiResponse.ok) {
-      console.error("Gemini API Error Response:", data);
+      // Security: Log detailed error internally, but return a generic message to the client
+      console.error("Gemini API Error Response:", JSON.stringify(data, null, 2));
       return res.status(apiResponse.status).json({ 
-        error: "Gemini API error", 
-        details: data.error?.message || JSON.stringify(data) 
+        error: "Gemini API error"
       });
     }
 
@@ -251,8 +262,9 @@ app.post('/api/generate-audio', async (req, res) => {
     res.json({ audioUrl });
 
   } catch (error) {
+    // Security: Log detailed error internally, but return a generic message to the client
     console.error("Error in generate-audio:", error);
-    res.status(500).json({ error: "Internal server error", details: error.message });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
