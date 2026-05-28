@@ -128,8 +128,17 @@ function parseScript(rawScript) {
 app.post('/api/generate-audio', async (req, res) => {
   const { scriptText, directorNotes, xenonVoice, silicaVoice } = req.body;
   
+  // Security: Input validation for existence and length (DoS prevention)
   if (!scriptText) {
     return res.status(400).json({ error: "Script text is required" });
+  }
+
+  if (scriptText.length > 5000) {
+    return res.status(400).json({ error: "Script text exceeds maximum length of 5000 characters" });
+  }
+
+  if (directorNotes && directorNotes.length > 500) {
+    return res.status(400).json({ error: "Director notes exceed maximum length of 500 characters" });
   }
 
   // Generate a unique cache key based on the request payload
@@ -145,7 +154,8 @@ app.post('/api/generate-audio', async (req, res) => {
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: "GEMINI_API_KEY is not set in backend server environment" });
+    console.error("CRITICAL: GEMINI_API_KEY is not set in backend server environment");
+    return res.status(500).json({ error: "Internal server error" });
   }
 
   // 1. Process script with regex parser
@@ -216,9 +226,9 @@ app.post('/api/generate-audio', async (req, res) => {
 
     if (!apiResponse.ok) {
       console.error("Gemini API Error Response:", data);
+      // Security: Sanitize error response to avoid leaking internal API details
       return res.status(apiResponse.status).json({ 
-        error: "Gemini API error", 
-        details: data.error?.message || JSON.stringify(data) 
+        error: "Gemini API error"
       });
     }
 
@@ -252,7 +262,8 @@ app.post('/api/generate-audio', async (req, res) => {
 
   } catch (error) {
     console.error("Error in generate-audio:", error);
-    res.status(500).json({ error: "Internal server error", details: error.message });
+    // Security: Do not leak stack traces or error details to the client
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
