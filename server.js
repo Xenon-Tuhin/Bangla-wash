@@ -18,35 +18,52 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 /**
- * Efficiently adds a WAV header to a PCM buffer.
- * Pre-allocates a single buffer of total size to avoid multiple allocations and copies.
+ * Calculates the exact byte length of a Base64 string.
  */
-function addWavHeader(pcmBuffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
-  const subChunk2Size = pcmBuffer.length;
-  const chunkSize = 36 + subChunk2Size;
+function getBase64ByteLength(base64String) {
+  const s = base64String.trim();
+  const len = s.length;
+  let padding = 0;
+  if (s.endsWith('==')) padding = 2;
+  else if (s.endsWith('=')) padding = 1;
+  return Math.floor((len * 3) / 4) - padding;
+}
+
+/**
+ * Generates a 54-byte WAV header as a Base64 string.
+ * Using a 54-byte header (standard 44 + 10-byte JUNK chunk) ensures the header length
+ * is a multiple of 3, allowing for direct Base64 concatenation without re-encoding.
+ */
+function getWavHeaderBase64(pcmByteLength, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
+  // 46 + pcmByteLength because:
+  // RIFF (4) + Size (4) + WAVE (4) + fmt (4) + fmtSize (4) + fmtData (16) + JUNK (4) + JUNKSize (4) + JUNKData (2) + data (4) + dataSize (4)
+  // Total header size = 54 bytes. 54 is divisible by 3.
+  const chunkSize = 46 + pcmByteLength;
   const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
   const blockAlign = (numChannels * bitsPerSample) / 8;
 
-  const totalBuffer = Buffer.allocUnsafe(44 + subChunk2Size);
+  const header = Buffer.allocUnsafe(54);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(chunkSize, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
 
-  totalBuffer.write("RIFF", 0);
-  totalBuffer.writeUInt32LE(chunkSize, 4);
-  totalBuffer.write("WAVE", 8);
-  totalBuffer.write("fmt ", 12);
-  totalBuffer.writeUInt32LE(16, 16);
-  totalBuffer.writeUInt16LE(1, 20);
-  totalBuffer.writeUInt16LE(numChannels, 22);
-  totalBuffer.writeUInt32LE(sampleRate, 24);
-  totalBuffer.writeUInt32LE(byteRate, 28);
-  totalBuffer.writeUInt16LE(blockAlign, 32);
-  totalBuffer.writeUInt16LE(bitsPerSample, 34);
-  totalBuffer.write("data", 36);
-  totalBuffer.writeUInt32LE(subChunk2Size, 40);
+  // Add a 10-byte JUNK chunk to pad the header to 54 bytes
+  header.write("JUNK", 36);
+  header.writeUInt32LE(2, 40); // 2 bytes of data in JUNK chunk
+  header.writeUInt16LE(0, 44); // The 2 bytes of data
 
-  // Copy PCM data into the same buffer
-  pcmBuffer.copy(totalBuffer, 44);
+  header.write("data", 46);
+  header.writeUInt32LE(pcmByteLength, 50);
 
-  return totalBuffer;
+  return header.toString('base64');
 }
 
 // Pre-defined maps and regex for performance
@@ -230,15 +247,14 @@ app.post('/api/generate-audio', async (req, res) => {
       return res.status(500).json({ error: "Gemini API response did not contain audio data" });
     }
 
-    // Decode base64 PCM data
-    const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
+    // Optimized: Direct Base64 concatenation (Zero-Copy)
+    // Gemini TTS returns 24kHz 16-bit Mono PCM in Base64
+    const pcmBase64 = part.inlineData.data;
+    const pcmByteLength = getBase64ByteLength(pcmBase64);
+    const headerBase64 = getWavHeaderBase64(pcmByteLength, 24000, 1, 16);
     
-    // Add WAV header (Gemini TTS returns 24kHz 16-bit Mono PCM)
-    const wavBuffer = addWavHeader(pcmBuffer, 24000, 1, 16);
-    
-    // Encode back to Base64 WAV
-    const base64Wav = wavBuffer.toString('base64');
-    const audioUrl = `data:audio/wav;base64,${base64Wav}`;
+    // Concatenate Base64 strings directly. No Buffer decode/encode needed.
+    const audioUrl = `data:audio/wav;base64,${headerBase64}${pcmBase64}`;
 
     // Store in cache before sending response
     if (audioCache.size >= MAX_CACHE_SIZE) {
