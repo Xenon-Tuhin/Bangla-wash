@@ -49,6 +49,54 @@ function addWavHeader(pcmBuffer, sampleRate = 24000, numChannels = 1, bitsPerSam
   return totalBuffer;
 }
 
+/**
+ * Calculates the byte length of a Base64 string without decoding it.
+ */
+function getBase64ByteLength(base64String) {
+  const len = base64String.length;
+  let padding = 0;
+  if (base64String.endsWith('==')) padding = 2;
+  else if (base64String.endsWith('=')) padding = 1;
+  return (len * 3) / 4 - padding;
+}
+
+/**
+ * Generates a 54-byte WAV header as a Base64 string.
+ * A 54-byte header ensures the Base64 representation has no padding (multiple of 3),
+ * allowing for direct concatenation with PCM Base64 data.
+ */
+function getWavHeaderBase64(pcmByteLength, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
+  const subChunk2Size = pcmByteLength;
+  const chunkSize = 36 + subChunk2Size + 10; // +10 for JUNK chunk
+  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+  const blockAlign = (numChannels * bitsPerSample) / 8;
+
+  const header = Buffer.allocUnsafe(54);
+
+  header.write("RIFF", 0);
+  header.writeUInt32LE(chunkSize, 4);
+  header.write("WAVE", 8);
+
+  // JUNK chunk to pad header to 54 bytes (multiple of 3)
+  // 54 - 44 (standard) = 10 bytes for JUNK
+  header.write("JUNK", 12);
+  header.writeUInt32LE(2, 16); // 2 bytes of data
+  header.writeUInt16LE(0, 20); // padding
+
+  header.write("fmt ", 22);
+  header.writeUInt32LE(16, 26);
+  header.writeUInt16LE(1, 30);
+  header.writeUInt16LE(numChannels, 32);
+  header.writeUInt32LE(sampleRate, 34);
+  header.writeUInt32LE(byteRate, 38);
+  header.writeUInt16LE(blockAlign, 42);
+  header.writeUInt16LE(bitsPerSample, 44);
+  header.write("data", 46);
+  header.writeUInt32LE(subChunk2Size, 50);
+
+  return header.toString('base64');
+}
+
 // Pre-defined maps and regex for performance
 const EMOTION_MAP = {
   'laughing': 'laughs',
@@ -133,8 +181,14 @@ app.post('/api/generate-audio', async (req, res) => {
   }
 
   // Generate a unique cache key based on the request payload
+  // Explicitly apply defaults to ensure consistent cache hits
   const cacheKey = crypto.createHash('md5')
-    .update(JSON.stringify({ scriptText, directorNotes, xenonVoice, silicaVoice }))
+    .update(JSON.stringify({
+      scriptText,
+      directorNotes,
+      xenonVoice: xenonVoice || "Fenrir",
+      silicaVoice: silicaVoice || "Leda"
+    }))
     .digest('hex');
 
   // Check cache first
@@ -230,15 +284,13 @@ app.post('/api/generate-audio', async (req, res) => {
       return res.status(500).json({ error: "Gemini API response did not contain audio data" });
     }
 
-    // Decode base64 PCM data
-    const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
+    // Zero-copy Base64 concatenation (avoids Decode -> Header -> Encode overhead)
+    // Gemini TTS returns 24kHz 16-bit Mono PCM
+    const pcmBase64 = part.inlineData.data;
+    const pcmByteLength = getBase64ByteLength(pcmBase64);
+    const wavHeaderBase64 = getWavHeaderBase64(pcmByteLength, 24000, 1, 16);
     
-    // Add WAV header (Gemini TTS returns 24kHz 16-bit Mono PCM)
-    const wavBuffer = addWavHeader(pcmBuffer, 24000, 1, 16);
-    
-    // Encode back to Base64 WAV
-    const base64Wav = wavBuffer.toString('base64');
-    const audioUrl = `data:audio/wav;base64,${base64Wav}`;
+    const audioUrl = `data:audio/wav;base64,${wavHeaderBase64}${pcmBase64}`;
 
     // Store in cache before sending response
     if (audioCache.size >= MAX_CACHE_SIZE) {
