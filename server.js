@@ -18,35 +18,55 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 /**
- * Efficiently adds a WAV header to a PCM buffer.
- * Pre-allocates a single buffer of total size to avoid multiple allocations and copies.
+ * Calculates the exact byte length of a Base64 encoded string.
  */
-function addWavHeader(pcmBuffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
-  const subChunk2Size = pcmBuffer.length;
-  const chunkSize = 36 + subChunk2Size;
+function getBase64ByteLength(base64String) {
+  const len = base64String.length;
+  let padding = 0;
+  if (base64String.endsWith('==')) padding = 2;
+  else if (base64String.endsWith('=')) padding = 1;
+  return Math.floor((len * 3) / 4) - padding;
+}
+
+/**
+ * Generates a 54-byte Base64 encoded WAV header.
+ * Uses a 10-byte 'JUNK' chunk to ensure the header length is a multiple of 3 (54 bytes),
+ * allowing direct Base64 concatenation without re-encoding the PCM data.
+ */
+function getBase64WavHeader(pcmLength, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
+  const headerSize = 54;
+  const subChunk2Size = pcmLength;
+  const chunkSize = 36 + subChunk2Size + 10; // 36 + pcm + 10 (JUNK chunk)
   const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
   const blockAlign = (numChannels * bitsPerSample) / 8;
 
-  const totalBuffer = Buffer.allocUnsafe(44 + subChunk2Size);
+  const buffer = Buffer.allocUnsafe(headerSize);
 
-  totalBuffer.write("RIFF", 0);
-  totalBuffer.writeUInt32LE(chunkSize, 4);
-  totalBuffer.write("WAVE", 8);
-  totalBuffer.write("fmt ", 12);
-  totalBuffer.writeUInt32LE(16, 16);
-  totalBuffer.writeUInt16LE(1, 20);
-  totalBuffer.writeUInt16LE(numChannels, 22);
-  totalBuffer.writeUInt32LE(sampleRate, 24);
-  totalBuffer.writeUInt32LE(byteRate, 28);
-  totalBuffer.writeUInt16LE(blockAlign, 32);
-  totalBuffer.writeUInt16LE(bitsPerSample, 34);
-  totalBuffer.write("data", 36);
-  totalBuffer.writeUInt32LE(subChunk2Size, 40);
+  // RIFF Header
+  buffer.write("RIFF", 0);
+  buffer.writeUInt32LE(chunkSize, 4);
+  buffer.write("WAVE", 8);
 
-  // Copy PCM data into the same buffer
-  pcmBuffer.copy(totalBuffer, 44);
+  // JUNK chunk to align to 3 bytes (10 bytes total)
+  buffer.write("JUNK", 12);
+  buffer.writeUInt32LE(2, 16);
+  buffer.writeUInt16LE(0, 20);
 
-  return totalBuffer;
+  // fmt chunk (16 bytes)
+  buffer.write("fmt ", 22);
+  buffer.writeUInt32LE(16, 26);
+  buffer.writeUInt16LE(1, 30);
+  buffer.writeUInt16LE(numChannels, 32);
+  buffer.writeUInt32LE(sampleRate, 34);
+  buffer.writeUInt32LE(byteRate, 38);
+  buffer.writeUInt16LE(blockAlign, 42);
+  buffer.writeUInt16LE(bitsPerSample, 44);
+
+  // data chunk header (8 bytes)
+  buffer.write("data", 46);
+  buffer.writeUInt32LE(subChunk2Size, 50);
+
+  return buffer.toString('base64');
 }
 
 // Pre-defined maps and regex for performance
@@ -230,15 +250,15 @@ app.post('/api/generate-audio', async (req, res) => {
       return res.status(500).json({ error: "Gemini API response did not contain audio data" });
     }
 
-    // Decode base64 PCM data
-    const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
+    // ZERO-COPY OPTIMIZATION: Concatenate Base64 header directly with Base64 PCM data.
+    // This avoids expensive Buffer.from (decode) and wavBuffer.toString('base64') (encode) cycles.
+    const rawBase64Pcm = part.inlineData.data.trim();
+    const pcmByteLength = getBase64ByteLength(rawBase64Pcm);
     
-    // Add WAV header (Gemini TTS returns 24kHz 16-bit Mono PCM)
-    const wavBuffer = addWavHeader(pcmBuffer, 24000, 1, 16);
+    // Generate a 54-byte (padded) WAV header that is always Base64-aligned (multiple of 3).
+    const base64Header = getBase64WavHeader(pcmByteLength, 24000, 1, 16);
     
-    // Encode back to Base64 WAV
-    const base64Wav = wavBuffer.toString('base64');
-    const audioUrl = `data:audio/wav;base64,${base64Wav}`;
+    const audioUrl = `data:audio/wav;base64,${base64Header}${rawBase64Pcm}`;
 
     // Store in cache before sending response
     if (audioCache.size >= MAX_CACHE_SIZE) {
