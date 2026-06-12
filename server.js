@@ -18,35 +18,48 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 /**
- * Efficiently adds a WAV header to a PCM buffer.
- * Pre-allocates a single buffer of total size to avoid multiple allocations and copies.
+ * Accurately calculates the byte length of a Base64 string without decoding it.
  */
-function addWavHeader(pcmBuffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
-  const subChunk2Size = pcmBuffer.length;
-  const chunkSize = 36 + subChunk2Size;
+function getBase64ByteLength(base64String) {
+  const trimmed = base64String.trim();
+  const len = trimmed.length;
+  if (len === 0) return 0;
+  let padding = 0;
+  if (trimmed.endsWith('==')) padding = 2;
+  else if (trimmed.endsWith('=')) padding = 1;
+  return Math.floor((len * 3) / 4) - padding;
+}
+
+/**
+ * Generates a Base64-encoded 54-byte WAV header.
+ * The 54-byte length (multiple of 3) allows for direct Base64 concatenation
+ * without re-encoding the entire payload.
+ */
+function get54ByteWavHeaderBase64(pcmByteLength, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
+  const header = Buffer.allocUnsafe(54);
+  const chunkSize = 46 + pcmByteLength;
   const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
   const blockAlign = (numChannels * bitsPerSample) / 8;
 
-  const totalBuffer = Buffer.allocUnsafe(44 + subChunk2Size);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(chunkSize, 4);
+  header.write("WAVE", 8);
+  // Add a 10-byte JUNK chunk to pad the header to 54 bytes (multiple of 3 for Base64 alignment)
+  header.write("JUNK", 12);
+  header.writeUInt32LE(2, 16);
+  header.writeUInt16LE(0, 20);
+  header.write("fmt ", 22);
+  header.writeUInt32LE(16, 26);
+  header.writeUInt16LE(1, 30);
+  header.writeUInt16LE(numChannels, 32);
+  header.writeUInt32LE(sampleRate, 34);
+  header.writeUInt32LE(byteRate, 38);
+  header.writeUInt16LE(blockAlign, 42);
+  header.writeUInt16LE(bitsPerSample, 44);
+  header.write("data", 46);
+  header.writeUInt32LE(pcmByteLength, 50);
 
-  totalBuffer.write("RIFF", 0);
-  totalBuffer.writeUInt32LE(chunkSize, 4);
-  totalBuffer.write("WAVE", 8);
-  totalBuffer.write("fmt ", 12);
-  totalBuffer.writeUInt32LE(16, 16);
-  totalBuffer.writeUInt16LE(1, 20);
-  totalBuffer.writeUInt16LE(numChannels, 22);
-  totalBuffer.writeUInt32LE(sampleRate, 24);
-  totalBuffer.writeUInt32LE(byteRate, 28);
-  totalBuffer.writeUInt16LE(blockAlign, 32);
-  totalBuffer.writeUInt16LE(bitsPerSample, 34);
-  totalBuffer.write("data", 36);
-  totalBuffer.writeUInt32LE(subChunk2Size, 40);
-
-  // Copy PCM data into the same buffer
-  pcmBuffer.copy(totalBuffer, 44);
-
-  return totalBuffer;
+  return header.toString('base64');
 }
 
 // Pre-defined maps and regex for performance
@@ -230,15 +243,14 @@ app.post('/api/generate-audio', async (req, res) => {
       return res.status(500).json({ error: "Gemini API response did not contain audio data" });
     }
 
-    // Decode base64 PCM data
-    const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
+    // ZERO-COPY OPTIMIZATION:
+    // Instead of decoding Base64 to a Buffer and then re-encoding, we prepend
+    // a 54-byte WAV header (which is a multiple of 3) to the existing Base64 data.
+    const pcmBase64 = part.inlineData.data;
+    const pcmByteLength = getBase64ByteLength(pcmBase64);
+    const headerBase64 = get54ByteWavHeaderBase64(pcmByteLength, 24000, 1, 16);
     
-    // Add WAV header (Gemini TTS returns 24kHz 16-bit Mono PCM)
-    const wavBuffer = addWavHeader(pcmBuffer, 24000, 1, 16);
-    
-    // Encode back to Base64 WAV
-    const base64Wav = wavBuffer.toString('base64');
-    const audioUrl = `data:audio/wav;base64,${base64Wav}`;
+    const audioUrl = `data:audio/wav;base64,${headerBase64}${pcmBase64}`;
 
     // Store in cache before sending response
     if (audioCache.size >= MAX_CACHE_SIZE) {
