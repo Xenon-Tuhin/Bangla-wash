@@ -18,35 +18,54 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 /**
- * Efficiently adds a WAV header to a PCM buffer.
- * Pre-allocates a single buffer of total size to avoid multiple allocations and copies.
+ * Helper to calculate the exact byte length of a Base64 string without decoding.
+ * Handles padding characters and optional whitespace.
  */
-function addWavHeader(pcmBuffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
-  const subChunk2Size = pcmBuffer.length;
-  const chunkSize = 36 + subChunk2Size;
-  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
-  const blockAlign = (numChannels * bitsPerSample) / 8;
+function getBase64ByteLength(base64String) {
+  const trimmed = base64String.trim();
+  const len = trimmed.length;
+  let padding = 0;
+  if (trimmed.endsWith('==')) padding = 2;
+  else if (trimmed.endsWith('=')) padding = 1;
+  return Math.floor((len * 3) / 4) - padding;
+}
 
-  const totalBuffer = Buffer.allocUnsafe(44 + subChunk2Size);
+/**
+ * Returns a 54-byte WAV header in Base64.
+ * The 54-byte size (a multiple of 3) ensures the resulting Base64 string
+ * has no padding and can be directly concatenated with the audio Base64.
+ * Uses a 10-byte 'JUNK' chunk to align the standard 44-byte header.
+ */
+function get54ByteWavHeaderBase64(dataLength, sampleRate = 24000) {
+  const totalHeaderSize = 54;
+  const pcmLength = dataLength;
+  const buffer = Buffer.allocUnsafe(totalHeaderSize);
 
-  totalBuffer.write("RIFF", 0);
-  totalBuffer.writeUInt32LE(chunkSize, 4);
-  totalBuffer.write("WAVE", 8);
-  totalBuffer.write("fmt ", 12);
-  totalBuffer.writeUInt32LE(16, 16);
-  totalBuffer.writeUInt16LE(1, 20);
-  totalBuffer.writeUInt16LE(numChannels, 22);
-  totalBuffer.writeUInt32LE(sampleRate, 24);
-  totalBuffer.writeUInt32LE(byteRate, 28);
-  totalBuffer.writeUInt16LE(blockAlign, 32);
-  totalBuffer.writeUInt16LE(bitsPerSample, 34);
-  totalBuffer.write("data", 36);
-  totalBuffer.writeUInt32LE(subChunk2Size, 40);
+  // Standard RIFF Header
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(36 + 10 + pcmLength, 4); // 36 (std) + 10 (junk) + pcm
+  buffer.write('WAVE', 8);
 
-  // Copy PCM data into the same buffer
-  pcmBuffer.copy(totalBuffer, 44);
+  // JUNK chunk for alignment (10 bytes total: 4 ID, 4 size, 2 data)
+  buffer.write('JUNK', 12);
+  buffer.writeUInt32LE(2, 16); // Chunk size is 2 bytes
+  buffer.writeUInt16LE(0, 20); // 2 bytes of zero data
 
-  return totalBuffer;
+  // FMT chunk
+  buffer.write('fmt ', 22);
+  buffer.writeUInt32LE(16, 26);
+  buffer.writeUInt16LE(1, 30); // PCM format
+  buffer.writeUInt16LE(1, 32); // Mono
+  buffer.writeUInt32LE(sampleRate, 34);
+  buffer.writeUInt32LE(sampleRate * 2, 38); // Byte rate (16-bit mono)
+  buffer.writeUInt16LE(2, 42); // Block align
+  buffer.writeUInt16LE(16, 44); // Bits per sample
+
+  // Data chunk header
+  buffer.write('data', 46);
+  buffer.writeUInt32LE(pcmLength, 50);
+
+  return buffer.toString('base64');
 }
 
 // Pre-defined maps and regex for performance
@@ -132,9 +151,13 @@ app.post('/api/generate-audio', async (req, res) => {
     return res.status(400).json({ error: "Script text is required" });
   }
 
+  // Use default voices if not provided for consistent cache keys
+  const xVoice = xenonVoice || "Fenrir";
+  const sVoice = silicaVoice || "Leda";
+
   // Generate a unique cache key based on the request payload
   const cacheKey = crypto.createHash('md5')
-    .update(JSON.stringify({ scriptText, directorNotes, xenonVoice, silicaVoice }))
+    .update(JSON.stringify({ scriptText, directorNotes, xenonVoice: xVoice, silicaVoice: sVoice }))
     .digest('hex');
 
   // Check cache first
@@ -185,7 +208,7 @@ app.post('/api/generate-audio', async (req, res) => {
               speaker: "Xenon",
               voiceConfig: {
                 prebuiltVoiceConfig: {
-                  voiceName: xenonVoice || "Fenrir"
+                  voiceName: xVoice
                 }
               }
             },
@@ -193,7 +216,7 @@ app.post('/api/generate-audio', async (req, res) => {
               speaker: "Silica",
               voiceConfig: {
                 prebuiltVoiceConfig: {
-                  voiceName: silicaVoice || "Leda"
+                  voiceName: sVoice
                 }
               }
             }
@@ -230,15 +253,13 @@ app.post('/api/generate-audio', async (req, res) => {
       return res.status(500).json({ error: "Gemini API response did not contain audio data" });
     }
 
-    // Decode base64 PCM data
-    const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
+    // Optimized zero-copy Base64 concatenation.
+    // Prepend a pre-aligned 54-byte WAV header directly to the Base64 PCM data.
+    const base64Pcm = part.inlineData.data;
+    const pcmByteLength = getBase64ByteLength(base64Pcm);
+    const headerBase64 = get54ByteWavHeaderBase64(pcmByteLength, 24000);
     
-    // Add WAV header (Gemini TTS returns 24kHz 16-bit Mono PCM)
-    const wavBuffer = addWavHeader(pcmBuffer, 24000, 1, 16);
-    
-    // Encode back to Base64 WAV
-    const base64Wav = wavBuffer.toString('base64');
-    const audioUrl = `data:audio/wav;base64,${base64Wav}`;
+    const audioUrl = `data:audio/wav;base64,${headerBase64}${base64Pcm}`;
 
     // Store in cache before sending response
     if (audioCache.size >= MAX_CACHE_SIZE) {
