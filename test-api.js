@@ -8,7 +8,7 @@ if (!apiKey) {
   process.exit(1);
 }
 
-const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
+const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent`;
 
 // Attempt 1 payload
 const payload1 = {
@@ -54,7 +54,8 @@ async function runTest() {
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
       },
       body: JSON.stringify(payload1)
     });
@@ -76,7 +77,8 @@ async function runTest() {
         const res2 = await fetch(url, {
           method: "POST",
           headers: {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "x-goog-api-key": apiKey
           },
           body: JSON.stringify(payload2)
         });
