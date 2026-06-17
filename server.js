@@ -10,44 +10,19 @@ dotenv.config();
 const audioCache = new Map();
 const MAX_CACHE_SIZE = 100; // Limit cache size to prevent memory leaks
 
+/**
+ * Pre-calculated 54-byte WAV header for 24kHz 16-bit Mono PCM.
+ * Includes a 10-byte 'JUNK' chunk to align the header to a multiple of 3 (54 bytes),
+ * allowing direct Base64 concatenation with the PCM data without re-encoding.
+ */
+const WAV_HEADER_BASE64 = "UklGRgAAAABXQVZFSlVOSwIAAAAAAGZtdCAQAAAAAQABAMBdAACAuwAAAgAQAGRhdGEAAAAA";
+
 const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-
-/**
- * Efficiently adds a WAV header to a PCM buffer.
- * Pre-allocates a single buffer of total size to avoid multiple allocations and copies.
- */
-function addWavHeader(pcmBuffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
-  const subChunk2Size = pcmBuffer.length;
-  const chunkSize = 36 + subChunk2Size;
-  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
-  const blockAlign = (numChannels * bitsPerSample) / 8;
-
-  const totalBuffer = Buffer.allocUnsafe(44 + subChunk2Size);
-
-  totalBuffer.write("RIFF", 0);
-  totalBuffer.writeUInt32LE(chunkSize, 4);
-  totalBuffer.write("WAVE", 8);
-  totalBuffer.write("fmt ", 12);
-  totalBuffer.writeUInt32LE(16, 16);
-  totalBuffer.writeUInt16LE(1, 20);
-  totalBuffer.writeUInt16LE(numChannels, 22);
-  totalBuffer.writeUInt32LE(sampleRate, 24);
-  totalBuffer.writeUInt32LE(byteRate, 28);
-  totalBuffer.writeUInt16LE(blockAlign, 32);
-  totalBuffer.writeUInt16LE(bitsPerSample, 34);
-  totalBuffer.write("data", 36);
-  totalBuffer.writeUInt32LE(subChunk2Size, 40);
-
-  // Copy PCM data into the same buffer
-  pcmBuffer.copy(totalBuffer, 44);
-
-  return totalBuffer;
-}
 
 // Pre-defined maps and regex for performance
 const EMOTION_MAP = {
@@ -230,15 +205,10 @@ app.post('/api/generate-audio', async (req, res) => {
       return res.status(500).json({ error: "Gemini API response did not contain audio data" });
     }
 
-    // Decode base64 PCM data
-    const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
-    
-    // Add WAV header (Gemini TTS returns 24kHz 16-bit Mono PCM)
-    const wavBuffer = addWavHeader(pcmBuffer, 24000, 1, 16);
-    
-    // Encode back to Base64 WAV
-    const base64Wav = wavBuffer.toString('base64');
-    const audioUrl = `data:audio/wav;base64,${base64Wav}`;
+    // Bolt ⚡ Optimization: Zero-copy Base64 concatenation.
+    // Instead of decoding PCM -> adding header -> re-encoding to Base64,
+    // we use a pre-calculated 54-byte header that is already Base64-aligned.
+    const audioUrl = `data:audio/wav;base64,${WAV_HEADER_BASE64}${part.inlineData.data}`;
 
     // Store in cache before sending response
     if (audioCache.size >= MAX_CACHE_SIZE) {
