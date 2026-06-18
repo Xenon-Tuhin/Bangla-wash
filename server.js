@@ -128,8 +128,12 @@ function parseScript(rawScript) {
 app.post('/api/generate-audio', async (req, res) => {
   const { scriptText, directorNotes, xenonVoice, silicaVoice } = req.body;
   
-  if (!scriptText) {
-    return res.status(400).json({ error: "Script text is required" });
+  if (!scriptText || typeof scriptText !== 'string') {
+    return res.status(400).json({ error: "Script text is required and must be a string" });
+  }
+
+  if (scriptText.length > 5000) {
+    return res.status(400).json({ error: "Script text is too long (max 5000 characters)" });
   }
 
   // Generate a unique cache key based on the request payload
@@ -217,8 +221,7 @@ app.post('/api/generate-audio', async (req, res) => {
     if (!apiResponse.ok) {
       console.error("Gemini API Error Response:", data);
       return res.status(apiResponse.status).json({ 
-        error: "Gemini API error", 
-        details: data.error?.message || JSON.stringify(data) 
+        error: "An error occurred while communicating with the Gemini API"
       });
     }
 
@@ -252,7 +255,7 @@ app.post('/api/generate-audio', async (req, res) => {
 
   } catch (error) {
     console.error("Error in generate-audio:", error);
-    res.status(500).json({ error: "Internal server error", details: error.message });
+    res.status(500).json({ error: "An unexpected error occurred" });
   }
 });
 
