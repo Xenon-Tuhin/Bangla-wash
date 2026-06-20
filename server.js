@@ -82,6 +82,13 @@ function parseScript(rawScript) {
   for (let line of lines) {
     line = line.trim();
     if (!line) continue;
+
+    // Early exit for lines without colons (cannot be speaker lines)
+    // Avoids running multiple regex checks on plain text or descriptions
+    if (line.indexOf(':') === -1) {
+      processedLines.push(line);
+      continue;
+    }
     
     // Strict format: Speaker: (emotion) [dialogue] or Speaker: [dialogue]
     const match = line.match(STRICT_REGEX);
@@ -126,22 +133,17 @@ function parseScript(rawScript) {
 
 // Generate Audio Route
 app.post('/api/generate-audio', async (req, res) => {
-  const { scriptText, directorNotes, xenonVoice, silicaVoice } = req.body;
+  let { scriptText, directorNotes, xenonVoice, silicaVoice } = req.body;
   
-  if (!scriptText) {
-    return res.status(400).json({ error: "Script text is required" });
+  if (!scriptText || typeof scriptText !== 'string') {
+    return res.status(400).json({ error: "Script text is required and must be a string" });
   }
 
-  // Generate a unique cache key based on the request payload
-  const cacheKey = crypto.createHash('md5')
-    .update(JSON.stringify({ scriptText, directorNotes, xenonVoice, silicaVoice }))
-    .digest('hex');
-
-  // Check cache first
-  if (audioCache.has(cacheKey)) {
-    console.log("⚡ Serving audio from cache (key:", cacheKey, ")");
-    return res.json({ audioUrl: audioCache.get(cacheKey) });
-  }
+  // Normalize inputs for better caching and reliability
+  scriptText = scriptText.trim();
+  directorNotes = (directorNotes || "").trim();
+  xenonVoice = xenonVoice || "Fenrir";
+  silicaVoice = silicaVoice || "Leda";
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -153,10 +155,22 @@ app.post('/api/generate-audio', async (req, res) => {
   
   // 2. Prepended director's note
   let finalPrompt = '';
-  if (directorNotes && directorNotes.trim()) {
-    finalPrompt = `[Director's Note: ${directorNotes.trim()}]\n\n${parsedDialogue}`;
+  if (directorNotes) {
+    finalPrompt = `[Director's Note: ${directorNotes}]\n\n${parsedDialogue}`;
   } else {
     finalPrompt = parsedDialogue;
+  }
+
+  // Generate a unique cache key based on the final payload content.
+  // Using an array of normalized values to prevent potential key collisions.
+  const cacheKey = crypto.createHash('md5')
+    .update(JSON.stringify([finalPrompt, xenonVoice, silicaVoice]))
+    .digest('hex');
+
+  // Check cache first
+  if (audioCache.has(cacheKey)) {
+    console.log("⚡ Serving audio from cache (key:", cacheKey, ")");
+    return res.json({ audioUrl: audioCache.get(cacheKey) });
   }
 
   console.log("----- Parsed Prompt Sent to Gemini TTS -----");
