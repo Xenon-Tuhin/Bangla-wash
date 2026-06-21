@@ -82,6 +82,12 @@ function parseScript(rawScript) {
   for (let line of lines) {
     line = line.trim();
     if (!line) continue;
+
+    // Performance optimization: Early exit if it's definitely not a speaker line
+    if (line.indexOf(':') === -1) {
+      processedLines.push(line);
+      continue;
+    }
     
     // Strict format: Speaker: (emotion) [dialogue] or Speaker: [dialogue]
     const match = line.match(STRICT_REGEX);
@@ -107,12 +113,14 @@ function parseScript(rawScript) {
         const speaker = stdMatch[1];
         let rest = stdMatch[2];
         
-        // Replace any (emotion) in the rest of the line with [mapped_emotion]
-        rest = rest.replace(EMOTION_INLINE_REGEX, (m, g1) => {
-          const cleanEmotion = g1.trim().toLowerCase();
-          const mapped = EMOTION_MAP[cleanEmotion] || cleanEmotion;
-          return `[${mapped}]`;
-        });
+        // Performance optimization: Only run replace if there's a potential emotion tag
+        if (rest.indexOf('(') !== -1) {
+          rest = rest.replace(EMOTION_INLINE_REGEX, (m, g1) => {
+            const cleanEmotion = g1.trim().toLowerCase();
+            const mapped = EMOTION_MAP[cleanEmotion] || cleanEmotion;
+            return `[${mapped}]`;
+          });
+        }
         
         processedLines.push(`${speaker}: ${rest}`);
       } else {
@@ -132,10 +140,16 @@ app.post('/api/generate-audio', async (req, res) => {
     return res.status(400).json({ error: "Script text is required" });
   }
 
-  // Generate a unique cache key based on the request payload
-  const cacheKey = crypto.createHash('md5')
-    .update(JSON.stringify({ scriptText, directorNotes, xenonVoice, silicaVoice }))
-    .digest('hex');
+  // Performance optimization: Generate a unique cache key field-by-field to avoid large JSON.stringify allocations
+  const hash = crypto.createHash('md5');
+  hash.update(scriptText || '');
+  hash.update('|');
+  hash.update(directorNotes || '');
+  hash.update('|');
+  hash.update(xenonVoice || 'Fenrir');
+  hash.update('|');
+  hash.update(silicaVoice || 'Leda');
+  const cacheKey = hash.digest('hex');
 
   // Check cache first
   if (audioCache.has(cacheKey)) {
