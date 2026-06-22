@@ -83,6 +83,12 @@ function parseScript(rawScript) {
     line = line.trim();
     if (!line) continue;
     
+    // Optimization: Early exit for non-speaker lines
+    if (line.indexOf(':') === -1) {
+      processedLines.push(line);
+      continue;
+    }
+
     // Strict format: Speaker: (emotion) [dialogue] or Speaker: [dialogue]
     const match = line.match(STRICT_REGEX);
     
@@ -107,12 +113,15 @@ function parseScript(rawScript) {
         const speaker = stdMatch[1];
         let rest = stdMatch[2];
         
-        // Replace any (emotion) in the rest of the line with [mapped_emotion]
-        rest = rest.replace(EMOTION_INLINE_REGEX, (m, g1) => {
-          const cleanEmotion = g1.trim().toLowerCase();
-          const mapped = EMOTION_MAP[cleanEmotion] || cleanEmotion;
-          return `[${mapped}]`;
-        });
+        // Optimization: Conditional regex processing for emotions
+        if (rest.indexOf('(') !== -1) {
+          // Replace any (emotion) in the rest of the line with [mapped_emotion]
+          rest = rest.replace(EMOTION_INLINE_REGEX, (m, g1) => {
+            const cleanEmotion = g1.trim().toLowerCase();
+            const mapped = EMOTION_MAP[cleanEmotion] || cleanEmotion;
+            return `[${mapped}]`;
+          });
+        }
         
         processedLines.push(`${speaker}: ${rest}`);
       } else {
