@@ -82,9 +82,19 @@ function parseScript(rawScript) {
   for (let line of lines) {
     line = line.trim();
     if (!line) continue;
+
+    // ⚡ Bolt: Early exit for non-speaker lines
+    const colonIndex = line.indexOf(':');
+    if (colonIndex === -1) {
+      processedLines.push(line);
+      continue;
+    }
     
-    // Strict format: Speaker: (emotion) [dialogue] or Speaker: [dialogue]
-    const match = line.match(STRICT_REGEX);
+    // ⚡ Bolt: Only attempt strict match if brackets exist
+    let match = null;
+    if (line.indexOf('[') !== -1) {
+      match = line.match(STRICT_REGEX);
+    }
     
     if (match) {
       const speaker = match[1];
@@ -101,18 +111,20 @@ function parseScript(rawScript) {
       processedLines.push(`${speaker}: ${emotionTag}${dialogue}`);
     } else {
       // Fallback: Speaker: rest_of_line
-      const stdMatch = line.match(STANDARD_REGEX);
-      
-      if (stdMatch) {
-        const speaker = stdMatch[1];
-        let rest = stdMatch[2];
+      // ⚡ Bolt: Faster speaker/dialogue split using string methods instead of full regex match
+      const speaker = line.slice(0, colonIndex);
+      // Ensure speaker matches \w+ requirement of original STANDARD_REGEX
+      if (/^\w+$/.test(speaker)) {
+        let rest = line.slice(colonIndex + 1).trim();
         
-        // Replace any (emotion) in the rest of the line with [mapped_emotion]
-        rest = rest.replace(EMOTION_INLINE_REGEX, (m, g1) => {
-          const cleanEmotion = g1.trim().toLowerCase();
-          const mapped = EMOTION_MAP[cleanEmotion] || cleanEmotion;
-          return `[${mapped}]`;
-        });
+        // ⚡ Bolt: Only process inline emotions if parentheses exist
+        if (rest.indexOf('(') !== -1) {
+          rest = rest.replace(EMOTION_INLINE_REGEX, (m, g1) => {
+            const cleanEmotion = g1.trim().toLowerCase();
+            const mapped = EMOTION_MAP[cleanEmotion] || cleanEmotion;
+            return `[${mapped}]`;
+          });
+        }
         
         processedLines.push(`${speaker}: ${rest}`);
       } else {
