@@ -83,8 +83,18 @@ function parseScript(rawScript) {
     line = line.trim();
     if (!line) continue;
     
-    // Strict format: Speaker: (emotion) [dialogue] or Speaker: [dialogue]
-    const match = line.match(STRICT_REGEX);
+    // Optimization: Early exit for non-speaker lines
+    const colonIndex = line.indexOf(':');
+    if (colonIndex === -1) {
+      processedLines.push(line);
+      continue;
+    }
+
+    let match = null;
+    // Optimization: Only run STRICT_REGEX if it looks like strict format Speaker: [dialogue]
+    if (line.indexOf('[') !== -1) {
+      match = line.match(STRICT_REGEX);
+    }
     
     if (match) {
       const speaker = match[1];
@@ -100,19 +110,20 @@ function parseScript(rawScript) {
       
       processedLines.push(`${speaker}: ${emotionTag}${dialogue}`);
     } else {
-      // Fallback: Speaker: rest_of_line
-      const stdMatch = line.match(STANDARD_REGEX);
-      
-      if (stdMatch) {
-        const speaker = stdMatch[1];
-        let rest = stdMatch[2];
+      // Optimization: Manual extraction instead of STANDARD_REGEX fallback
+      const speaker = line.slice(0, colonIndex).trim();
+      // Permissive speaker validation (no spaces/punctuation requirement, consistent with STANDARD_REGEX)
+      if (speaker.length > 0 && speaker.length < 50) {
+        let rest = line.slice(colonIndex + 1).trim();
         
-        // Replace any (emotion) in the rest of the line with [mapped_emotion]
-        rest = rest.replace(EMOTION_INLINE_REGEX, (m, g1) => {
-          const cleanEmotion = g1.trim().toLowerCase();
-          const mapped = EMOTION_MAP[cleanEmotion] || cleanEmotion;
-          return `[${mapped}]`;
-        });
+        // Optimization: Only run emotion replacement if '(' is present
+        if (rest.indexOf('(') !== -1) {
+          rest = rest.replace(EMOTION_INLINE_REGEX, (m, g1) => {
+            const cleanEmotion = g1.trim().toLowerCase();
+            const mapped = EMOTION_MAP[cleanEmotion] || cleanEmotion;
+            return `[${mapped}]`;
+          });
+        }
         
         processedLines.push(`${speaker}: ${rest}`);
       } else {
