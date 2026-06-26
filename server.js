@@ -79,45 +79,55 @@ function parseScript(rawScript) {
   const lines = rawScript.split('\n');
   const processedLines = [];
   
-  for (let line of lines) {
-    line = line.trim();
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trim();
     if (!line) continue;
-    
-    // Strict format: Speaker: (emotion) [dialogue] or Speaker: [dialogue]
-    const match = line.match(STRICT_REGEX);
-    
-    if (match) {
-      const speaker = match[1];
-      const emotionRaw = match[2];
-      const dialogue = match[3];
-      
-      let emotionTag = '';
-      if (emotionRaw) {
-        const cleanEmotion = emotionRaw.trim().toLowerCase();
-        const mapped = EMOTION_MAP[cleanEmotion] || cleanEmotion;
-        emotionTag = `[${mapped}] `;
+
+    // Optimization: Skip lines without a speaker colon early
+    const colonIndex = line.indexOf(':');
+    if (colonIndex === -1) {
+      processedLines.push(line);
+      continue;
+    }
+
+    // Optimization: Only run expensive STRICT_REGEX if we see dialogue brackets
+    if (line.indexOf('[') !== -1) {
+      const match = line.match(STRICT_REGEX);
+      if (match) {
+        const speaker = match[1];
+        const emotionRaw = match[2];
+        const dialogue = match[3];
+
+        let emotionTag = '';
+        if (emotionRaw) {
+          const cleanEmotion = emotionRaw.trim().toLowerCase();
+          const mapped = EMOTION_MAP[cleanEmotion] || cleanEmotion;
+          emotionTag = `[${mapped}] `;
+        }
+
+        processedLines.push(`${speaker}: ${emotionTag}${dialogue}`);
+        continue;
       }
+    }
+
+    // Manual slice instead of STANDARD_REGEX for performance
+    const speaker = line.substring(0, colonIndex).trim();
+    // Replicate \w+ regex behavior for speaker name
+    if (/^\w+$/.test(speaker)) {
+      let rest = line.substring(colonIndex + 1).trim();
       
-      processedLines.push(`${speaker}: ${emotionTag}${dialogue}`);
-    } else {
-      // Fallback: Speaker: rest_of_line
-      const stdMatch = line.match(STANDARD_REGEX);
-      
-      if (stdMatch) {
-        const speaker = stdMatch[1];
-        let rest = stdMatch[2];
-        
-        // Replace any (emotion) in the rest of the line with [mapped_emotion]
+      // Optimization: Only run emotion replacement if we see parentheses
+      if (rest.indexOf('(') !== -1) {
         rest = rest.replace(EMOTION_INLINE_REGEX, (m, g1) => {
           const cleanEmotion = g1.trim().toLowerCase();
           const mapped = EMOTION_MAP[cleanEmotion] || cleanEmotion;
           return `[${mapped}]`;
         });
-        
-        processedLines.push(`${speaker}: ${rest}`);
-      } else {
-        processedLines.push(line);
       }
+
+      processedLines.push(`${speaker}: ${rest}`);
+    } else {
+      processedLines.push(line);
     }
   }
   
