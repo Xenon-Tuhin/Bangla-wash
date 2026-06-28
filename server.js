@@ -128,8 +128,15 @@ function parseScript(rawScript) {
 app.post('/api/generate-audio', async (req, res) => {
   const { scriptText, directorNotes, xenonVoice, silicaVoice } = req.body;
   
-  if (!scriptText) {
-    return res.status(400).json({ error: "Script text is required" });
+  // 🛡️ Sentinel: Input validation and length limits
+  if (!scriptText || typeof scriptText !== 'string' || scriptText.trim().length === 0) {
+    return res.status(400).json({ error: "Script text is required and must be a non-empty string" });
+  }
+  if (scriptText.length > 5000) {
+    return res.status(400).json({ error: "Script text is too long (max 5000 characters)" });
+  }
+  if (directorNotes && (typeof directorNotes !== 'string' || directorNotes.length > 1000)) {
+    return res.status(400).json({ error: "Director notes must be a string under 1000 characters" });
   }
 
   // Generate a unique cache key based on the request payload
@@ -145,7 +152,8 @@ app.post('/api/generate-audio', async (req, res) => {
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: "GEMINI_API_KEY is not set in backend server environment" });
+    // 🛡️ Sentinel: Sanitize error when API key is missing
+    return res.status(500).json({ error: "An unexpected error occurred" });
   }
 
   // 1. Process script with regex parser
@@ -163,7 +171,8 @@ app.post('/api/generate-audio', async (req, res) => {
   console.log(finalPrompt);
   console.log("--------------------------------------------");
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
+  // 🛡️ Sentinel: Use header for API key instead of URL parameter
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent`;
 
   // Build the multi-speaker payload
   const payload = {
@@ -207,7 +216,8 @@ app.post('/api/generate-audio', async (req, res) => {
     const apiResponse = await fetch(url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey // 🛡️ Sentinel: Pass API key in header
       },
       body: JSON.stringify(payload)
     });
@@ -216,9 +226,9 @@ app.post('/api/generate-audio', async (req, res) => {
 
     if (!apiResponse.ok) {
       console.error("Gemini API Error Response:", data);
+      // 🛡️ Sentinel: Sanitize error response to avoid leaking details
       return res.status(apiResponse.status).json({ 
-        error: "Gemini API error", 
-        details: data.error?.message || JSON.stringify(data) 
+        error: "An error occurred while communicating with the Gemini API"
       });
     }
 
@@ -252,7 +262,8 @@ app.post('/api/generate-audio', async (req, res) => {
 
   } catch (error) {
     console.error("Error in generate-audio:", error);
-    res.status(500).json({ error: "Internal server error", details: error.message });
+    // 🛡️ Sentinel: Sanitize internal error response
+    res.status(500).json({ error: "An unexpected error occurred" });
   }
 });
 
