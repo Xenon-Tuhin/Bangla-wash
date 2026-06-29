@@ -145,7 +145,8 @@ app.post('/api/generate-audio', async (req, res) => {
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: "GEMINI_API_KEY is not set in backend server environment" });
+    console.error("GEMINI_API_KEY is not set in backend server environment");
+    return res.status(500).json({ error: "An unexpected error occurred" });
   }
 
   // 1. Process script with regex parser
@@ -163,7 +164,7 @@ app.post('/api/generate-audio', async (req, res) => {
   console.log(finalPrompt);
   console.log("--------------------------------------------");
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent`;
 
   // Build the multi-speaker payload
   const payload = {
@@ -207,7 +208,8 @@ app.post('/api/generate-audio', async (req, res) => {
     const apiResponse = await fetch(url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
       },
       body: JSON.stringify(payload)
     });
@@ -217,8 +219,7 @@ app.post('/api/generate-audio', async (req, res) => {
     if (!apiResponse.ok) {
       console.error("Gemini API Error Response:", data);
       return res.status(apiResponse.status).json({ 
-        error: "Gemini API error", 
-        details: data.error?.message || JSON.stringify(data) 
+        error: "An error occurred while communicating with the Gemini API"
       });
     }
 
@@ -227,7 +228,7 @@ app.post('/api/generate-audio', async (req, res) => {
 
     if (!part || !part.inlineData || !part.inlineData.data) {
       console.error("Gemini API response does not contain audio:", data);
-      return res.status(500).json({ error: "Gemini API response did not contain audio data" });
+      return res.status(500).json({ error: "An unexpected error occurred" });
     }
 
     // Decode base64 PCM data
@@ -252,7 +253,7 @@ app.post('/api/generate-audio', async (req, res) => {
 
   } catch (error) {
     console.error("Error in generate-audio:", error);
-    res.status(500).json({ error: "Internal server error", details: error.message });
+    res.status(500).json({ error: "An unexpected error occurred" });
   }
 });
 
